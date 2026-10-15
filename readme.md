@@ -4,6 +4,8 @@
 
 Mod pour **Worms Ultimate Mayhem** (Steam) : jouez en ligne avec les équipes IA du jeu en plus de vos amis.
 
+![Lobby en ligne : choix d'une équipe IA, Wormpot réglé par l'hôte](images/lobby.jpg)
+
 ## Fonctionnalités
 
 - **IA en ligne** : l'hôte ajoute dans le lobby en ligne des équipes CPU de sa caserne, avec leur vrai nom et leur icône de difficulté.
@@ -11,7 +13,7 @@ Mod pour **Worms Ultimate Mayhem** (Steam) : jouez en ligne avec les équipes IA
   - **Clic sur une IA** : ouvre la fenêtre Voir / Exclure. *Voir* change d'équipe, *Exclure* retire l'IA.
   - **Clic sur un joueur humain** : exclusion normale du jeu, inchangée.
   - Les IA jouent chez tous les joueurs, partie et revanche comprises.
-- **Wormpot en multijoueur** : l'hôte règle les 3 rouleaux, et la même combinaison s'applique automatiquement chez tous les joueurs.
+- **Wormpot en multijoueur** : avec le seul mod de Woitek1993, chaque joueur doit régler exactement le même Wormpot, sinon la partie plante. Ici, **seul l'hôte le règle** : ses 3 rouleaux sont envoyés automatiquement aux autres joueurs, et s'affichent chez eux, à chaque partie et à chaque revanche.
 - **Voix française complète** et correctifs communautaires (pack complet, option B).
 
 ## Installation
@@ -99,6 +101,8 @@ Sans `-DWUM_NOLOG`, vous obtenez une version de diagnostic : elle écrit `wummod
 
 A mod for **Worms Ultimate Mayhem** (Steam): play online with the game's AI teams alongside your friends.
 
+![Online lobby: picking an AI team, Wormpot set by the host](images/lobby.jpg)
+
 ### Features
 
 - **Online AI**: the host adds CPU teams from their barracks to the online lobby, with their real names and difficulty icon.
@@ -106,7 +110,7 @@ A mod for **Worms Ultimate Mayhem** (Steam): play online with the game's AI team
   - **Click an AI**: opens the View / Kick window. *View* changes the team, *Kick* removes the AI.
   - **Click a human player**: the game's normal kick, unchanged.
   - The AI plays on every player's PC, including rematches.
-- **Multiplayer Wormpot**: the host sets the 3 reels, and the same combination is applied automatically for every player.
+- **Multiplayer Wormpot**: with Woitek1993's mod alone, every player must set exactly the same Wormpot, or the game crashes. Here, **only the host sets it**: their 3 reels are sent automatically to the other players and shown on their screens, for every game and every rematch.
 - **Full French voice pack** and community fixes (full pack, option B).
 
 ### Installation
