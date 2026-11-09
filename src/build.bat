@@ -1,6 +1,7 @@
 @echo off
-rem WUM-Mod : version finale (sans log) et version de diagnostic (avec log).
-rem MinGW 32 bits requis.
-set GCC=gcc
-%GCC% -std=gnu99 -O2 -Wall -shared -s -DWUM_NOLOG -o WUMMod.asi wummod.c -static-libgcc
-%GCC% -std=gnu99 -O2 -Wall -shared -s -o WUMMod_log.asi wummod.c -static-libgcc
+rem WUM-Mod : WUMMod.asi = version finale (sans journal), WUMMod_log.asi = version de diagnostic (journal wummod_log.txt).
+cd /d "%~dp0"
+set GCC=C:\MinGW\bin\gcc
+set F=-std=gnu99 -O2 -Wall -Wno-unused-parameter -Wno-unused-function -shared -s -static-libgcc
+%GCC% %F% -DWUM_NOLOG -o WUMMod.asi wummod.c
+%GCC% %F% -o WUMMod_log.asi wummod.c

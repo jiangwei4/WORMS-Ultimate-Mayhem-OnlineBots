@@ -1,24 +1,30 @@
-# wum-online-ai
+# WORMS-Ultimate-Mayhem-OnlineBots
 
 **Français** · [English](#english)
 
-Mod pour **Worms Ultimate Mayhem** (Steam) : jouez en ligne avec les équipes IA du jeu en plus de vos amis.
+Mod pour **Worms Ultimate Mayhem** (Steam) : jouez en ligne avec les équipes IA du jeu en plus de vos amis, en équipes, avec le nombre de vers de votre choix.
 
-![Lobby en ligne : choix d'une équipe IA, Wormpot réglé par l'hôte](images/lobby.jpg)
+![Lobby en ligne : deux joueurs alliés (rouge, 6 vers) contre deux IA (1 ver), Wormpot réglé par l'hôte](images/lobby.jpg)
 
 ## Fonctionnalités
 
 - **IA en ligne** : l'hôte ajoute dans le lobby en ligne des équipes CPU de sa caserne, avec leur vrai nom et leur icône de difficulté.
   - **Clic sur une ligne libre** : ouvre la liste des équipes CPU pour en choisir une.
-  - **Clic sur une IA** : ouvre la fenêtre Voir / Exclure. *Voir* change d'équipe, *Exclure* retire l'IA.
-  - **Clic sur un joueur humain** : exclusion normale du jeu, inchangée.
   - Les IA jouent chez tous les joueurs, partie et revanche comprises.
+- **Équipes et nombre de vers en ligne**, comme en partie locale : l'hôte clique sur une équipe déjà présente (un joueur ou une IA) et retrouve la fenêtre du jeu local :
+  - **nombre de vers** : 1 à 6 par équipe, 16 au total au maximum ;
+  - **couleur d'alliés** : les équipes de même couleur jouent ensemble, par exemple les humains contre les IA ;
+  - **handicap** : bonus ou malus de vie ;
+  - **Enlever une équipe** : retire l'IA, ou exclut le joueur.
+  - Le lobby affiche tout comme en local : nom dans la couleur d'alliés, icône du handicap, tête de ver (niveau de l'IA) et « ×N ». Les réglages de l'hôte s'appliquent chez tous les joueurs.
 - **Wormpot en multijoueur** : avec le seul mod de Woitek1993, chaque joueur doit régler exactement le même Wormpot, sinon la partie plante. Ici, **seul l'hôte le règle** : ses 3 rouleaux sont envoyés automatiquement aux autres joueurs, et s'affichent chez eux, à chaque partie et à chaque revanche.
 - **Voix française complète** et correctifs communautaires (pack complet, option B).
 
 ## Installation
 
 Téléchargez le dépôt (**Code → Download ZIP**), puis copiez les fichiers **jeu fermé** dans le dossier du jeu (`...\steamapps\common\WormsXHD\`). **Tous les joueurs doivent avoir la même installation.**
+
+![Choix d'une équipe IA dans le lobby en ligne](images/choix_ia.jpg)
 
 ### Option A — IA en ligne seulement (2 ou 3 fichiers du dépôt)
 
@@ -58,15 +64,16 @@ Dans le jeu, choisissez ensuite la voix **Français** dans les options de l'équ
 
 1. L'hôte crée une partie en ligne personnalisée.
 2. Il clique sur une ligne libre du lobby et choisit une équipe CPU. Il recommence pour chaque IA, jusqu'à 4 équipes au total.
-3. *(Optionnel)* Il règle le Wormpot.
-4. Les amis rejoignent et la partie se lance normalement.
+3. *(Optionnel)* Il clique sur une équipe (la sienne, celle d'un ami ou une IA) pour régler ses vers, sa couleur d'alliés et son handicap, puis **Accepter**.
+4. *(Optionnel)* Il règle le Wormpot.
+5. Les amis rejoignent et la partie se lance normalement.
 
 Le niveau d'une IA est celui choisi à la création de l'équipe CPU dans la caserne.
 
 ## Limites
 
 - Uniquement la **version Steam, build 1077** (`WormsMayhem.exe` 32 bits). Sur une autre version, le mod reste inactif.
-- **Seul l'hôte** ajoute ou retire des IA. Les équipes viennent de **sa** caserne, et les invités ne voient pas les lignes IA dans le lobby. Elles sont bien présentes en partie.
+- **Seul l'hôte** ajoute ou retire des IA et règle les équipes. Les IA viennent de **sa** caserne ; les invités ne voient pas les lignes IA dans le lobby, mais elles sont bien présentes en partie.
 - Si l'hôte quitte la partie, elle s'arrête pour tout le monde, comme dans le jeu d'origine.
 - Usage entre amis, sans garantie. Le fichier `.exe` du jeu n'est pas modifié : tout se fait en mémoire.
 
@@ -78,17 +85,17 @@ Fichiers de la voix : voir l'option B (`LOCAL.XOM`, `FreFE.xom`/`EngFE.xom`, `Wo
 
 ## Compilation
 
-Sources dans `src\` — MinGW 32 bits (`srcuild.bat`) :
+Sources dans `src\` — MinGW 32 bits (`src\build.bat`) :
 
 ```
 gcc -std=gnu99 -O2 -shared -s -DWUM_NOLOG -o WUMMod.asi wummod.c -static-libgcc
 ```
 
-Sans `-DWUM_NOLOG`, vous obtenez une version de diagnostic : elle écrit `wummod_log.txt` à la racine du jeu et émet des bips.
+Sans `-DWUM_NOLOG`, vous obtenez une version de diagnostic qui écrit `wummod_log.txt` à la racine du jeu.
 
 ## Crédits
 
-- **WUM-Mod (IA en ligne, synchro du Wormpot)** : jiangwei4
+- **WUM-Mod (IA en ligne, équipes et vers en ligne, synchro du Wormpot)** : jiangwei4
 - **Interface Wormpot multijoueur** : Woitek1993, mod « Wormpot for Multiplayer »
 - **Ultimate ASI Loader** : ThirteenAG
 - **WUM.Loader / WUM.Patch** (pack complet) : auteurs de la communauté WUM
@@ -99,23 +106,29 @@ Sans `-DWUM_NOLOG`, vous obtenez une version de diagnostic : elle écrit `wummod
 
 ## English
 
-A mod for **Worms Ultimate Mayhem** (Steam): play online with the game's AI teams alongside your friends.
+A mod for **Worms Ultimate Mayhem** (Steam): play online with the game's AI teams alongside your friends, in teams, with the number of worms you want.
 
-![Online lobby: picking an AI team, Wormpot set by the host](images/lobby.jpg)
+![Online lobby: two allied players (red, 6 worms) against two AI teams (1 worm), Wormpot set by the host](images/lobby.jpg)
 
 ### Features
 
 - **Online AI**: the host adds CPU teams from their barracks to the online lobby, with their real names and difficulty icon.
   - **Click an empty slot**: opens the CPU team list so you can pick one.
-  - **Click an AI**: opens the View / Kick window. *View* changes the team, *Kick* removes the AI.
-  - **Click a human player**: the game's normal kick, unchanged.
   - The AI plays on every player's PC, including rematches.
+- **Online teams and worm count**, as in local games: the host clicks a team already in the lobby (a player or an AI) and gets the local game's window:
+  - **number of worms**: 1 to 6 per team, 16 in total at most;
+  - **ally colour**: teams with the same colour play together, for example humans against the AI;
+  - **handicap**: health bonus or penalty;
+  - **Remove team**: removes the AI, or kicks the player.
+  - The lobby shows everything as in local games: name in the ally colour, handicap icon, worm head (AI skill) and "×N". The host's settings apply on every player's PC.
 - **Multiplayer Wormpot**: with Woitek1993's mod alone, every player must set exactly the same Wormpot, or the game crashes. Here, **only the host sets it**: their 3 reels are sent automatically to the other players and shown on their screens, for every game and every rematch.
 - **Full French voice pack** and community fixes (full pack, option B).
 
 ### Installation
 
 Download the repository (**Code → Download ZIP**), then copy the files **with the game closed** into the game folder (`...\steamapps\common\WormsXHD\`). **Every player must have the same setup.**
+
+![Picking an AI team in the online lobby](images/choix_ia.jpg)
 
 #### Option A — Online AI only (2 or 3 files from the repository)
 
@@ -155,15 +168,16 @@ Then, in the game, select the **French** voice in the team options.
 
 1. The host creates a custom online game.
 2. The host clicks an empty lobby slot and picks a CPU team. Repeat for each AI, up to 4 teams in total.
-3. *(Optional)* The host sets the Wormpot.
-4. Friends join and the game starts as usual.
+3. *(Optional)* The host clicks a team (their own, a friend's or an AI) to set its worms, ally colour and handicap, then **Accept**.
+4. *(Optional)* The host sets the Wormpot.
+5. Friends join and the game starts as usual.
 
 An AI's skill level is the one set when the CPU team was created in the barracks.
 
 ### Limitations
 
 - **Steam version, build 1077 only** (32-bit `WormsMayhem.exe`). On any other version, the mod stays inactive.
-- **Only the host** can add or remove AI teams. The teams come from **the host's** barracks, and guests don't see the AI rows in the lobby. The teams are present in the game.
+- **Only the host** can add or remove AI teams and set the teams. The AI teams come from **the host's** barracks; guests don't see the AI rows in the lobby, but the teams are present in the game.
 - If the host leaves, the game ends for everyone, as in the original game.
 - For playing with friends, no warranty. The game's `.exe` file is not modified: everything happens in memory.
 
@@ -175,17 +189,17 @@ Voice files: see option B (`LOCAL.XOM`, `FreFE.xom`/`EngFE.xom`, `WormsX.fev` an
 
 ### Building
 
-Sources in `src\` — MinGW 32-bit (`srcuild.bat`):
+Sources in `src\` — MinGW 32-bit (`src\build.bat`):
 
 ```
 gcc -std=gnu99 -O2 -shared -s -DWUM_NOLOG -o WUMMod.asi wummod.c -static-libgcc
 ```
 
-Without `-DWUM_NOLOG`, you get a diagnostic build: it writes `wummod_log.txt` to the game root and beeps.
+Without `-DWUM_NOLOG`, you get a diagnostic build that writes `wummod_log.txt` to the game root.
 
 ### Credits
 
-- **WUM-Mod (online AI, Wormpot sync)**: jiangwei4
+- **WUM-Mod (online AI, online teams and worm count, Wormpot sync)**: jiangwei4
 - **Multiplayer Wormpot UI**: Woitek1993, "Wormpot for Multiplayer" mod
 - **Ultimate ASI Loader**: ThirteenAG
 - **WUM.Loader / WUM.Patch** (full pack): WUM community authors

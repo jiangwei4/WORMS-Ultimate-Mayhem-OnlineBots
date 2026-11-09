@@ -1,24 +1,20 @@
-// WUM-Mod — IA (équipes CPU) dans les parties en ligne de Worms Ultimate Mayhem.
-// Plugin .asi chargé par Ultimate ASI Loader (dinput8.dll déjà présent dans le jeu).
-// Ne modifie pas l'exe sur disque : vtables et crochets en mémoire uniquement.
+// WUM-Mod — Worms Ultimate Mayhem (Steam, build 1077) : équipes IA dans les parties en ligne,
+// réglages d'équipe en ligne (vers, alliés, handicap) et Wormpot réglé par l'hôte seul.
+// Plugin .asi chargé par Ultimate ASI Loader ; l'exe n'est pas modifié sur disque (tout en mémoire).
 //
-// Principe v2 (voir CLAUDE.md) — le lobby Steam est géré par NetService (NetService_Xbox.cpp) :
-//  - Chaque joueur a UNE équipe (joueur+0x44). Au lancement, chaque PC exécute
-//    NetService::ProcessBeginGameMessage (0x70933A) qui clone l'équipe de chaque joueur et
-//    l'ajoute à GM.GameInitData via TeamControlService::AddTeamToGame. IsLocal = (Player == pseudo
-//    local) ; en Lua IsAIControlled = (Skill > 0).
-//  - F9 (hôte) : prépare une équipe IA = copie de la prochaine équipe CPU (Skill>0) de la caserne,
-//    avec son vrai nom et son niveau (choisi à la création de l'équipe). La caserne n'est pas modifiée.
-//  - Au lancement, juste après avoir envoyé les équipes des joueurs (NetService::Send appelé depuis
-//    0x70B061), l'hôte envoie un TeamMessage par IA avec Player = « WUM#k#pseudoHôte ».
-//    TeamMessage::Handle ignore normalement les équipes sans joueur : le mod les met de côté.
-//  - Après ProcessBeginGameMessage, chaque PC ajoute les mêmes IA dans le même ordre avec
-//    Player = pseudo de l'hôte → IA calculée chez l'hôte, distante chez les invités.
-//  - F7 : retire la dernière IA. F5 : la dernière IA passe à l'équipe CPU suivante. F8 : état dans le log.
-//  - Lobby : les IA sont affichées après les joueurs (crochet NetService::RefreshLobby) ; l'hôte
-//    envoie l'état des IA aux invités à chaque changement et à chaque arrivée de joueur.
+// Fonctionnement :
+//  - Lobby (NetService, NetService_Xbox.cpp) : l'hôte clique une ligne libre → liste des équipes CPU
+//    de sa caserne ; une ligne occupée → fenêtre locale de réglages d'équipe (WXFEP.TeamSettings).
+//  - L'hôte envoie l'état aux invités dans des TeamMessage marqués (champ Player) :
+//    « WUM#k/n#pseudoHôte#équipe » (IA), « WUMWP#r1#r2#r3 » (Wormpot), « WUMTS#… » (réglages).
+//  - Au lancement, chaque PC exécute NetService::ProcessBeginGameMessage (0x70933A) ; le mod y ajoute
+//    les mêmes IA dans le même ordre (Player = celui de l'hôte, Skill > 0 → IA) puis applique les
+//    réglages d'équipe dans GM.GameInitData. L'IA est calculée sur chaque PC : sa réflexion est rendue
+//    indépendante du nombre d'images par seconde (déterminisme réseau).
+//  - Lobby affiché comme la liste locale : lignes occupées reconstruites (couleur, handicap, vers).
 //
-// Compilation : build.bat (MinGW 32 bits). -DWUM_NOLOG pour une version sans log.
+// Compilation : build.bat (MinGW 32 bits). -DWUM_NOLOG : version finale sans journal.
+// Version de diagnostic (sans -DWUM_NOLOG) : journal wummod_log.txt à la racine du jeu.
 
 #include <windows.h>
 #include <stdio.h>
@@ -26,7 +22,7 @@
 #include <string.h>
 #include <stdarg.h>
 
-#define WUM_VERSION "WUM-Mod v26"
+#define WUM_VERSION "WUM-Mod v40"
 
 // ---------------------------------------------------------------- adresses (build 1077)
 #define NS_VT         0x89B3ECu  // vtable NetService (+0x18 Update)
@@ -70,9 +66,7 @@
 #define TEAM_PLAYER 0x34
 // GameInitData
 #define GI_NUMTEAMS 0x14
-#define GI_TEAM0    0x2C
-#define GI_STRIDE   0x68        // ATTENTION : pas régulier, utiliser gi_team()
-#define GI_ISLOCAL  0x18C
+#define GI_ISLOCAL  0x18C        // équipes : voir gi_team() (décalages non réguliers)
 
 #define MAX_AI 3
 #define MARK "WUM#"
@@ -80,6 +74,7 @@
 // ---------------------------------------------------------------- log
 static char g_dir[MAX_PATH];
 static CRITICAL_SECTION g_cs;
+#ifndef WUM_NOLOG
 static FILE* g_log;
 static int g_line_start = 1;
 
@@ -87,6 +82,7 @@ static void stamp(void) {
     SYSTEMTIME t; GetLocalTime(&t);
     fprintf(g_log, "[%02d:%02d:%02d.%03d] ", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
 }
+#endif
 
 static void logf_(const char* fmt, ...) {
 #ifndef WUM_NOLOG
@@ -100,9 +96,9 @@ static void logf_(const char* fmt, ...) {
 #endif
 }
 
+#ifndef WUM_NOLOG
 // texte brut des canaux de log du jeu (peut arriver par morceaux)
 static void log_raw(const char* s, int len) {
-#ifndef WUM_NOLOG
     if (!g_log || !s || len <= 0) return;
     EnterCriticalSection(&g_cs);
     for (int i = 0; i < len; i++) {
@@ -113,8 +109,8 @@ static void log_raw(const char* s, int len) {
         if (c == '\n') g_line_start = 1;
     }
     LeaveCriticalSection(&g_cs);
-#endif
 }
+#endif
 
 static void log_flush(void) {
 #ifndef WUM_NOLOG
@@ -169,37 +165,28 @@ static void* make_hook(uintptr_t target, void* detour, const uint8_t* sig, int s
     return tr;
 }
 
-// ---------------------------------------------------------------- config
-static int g_key_add = VK_F9, g_key_del = VK_F7, g_key_level = VK_F5, g_key_dump = VK_F8;
-static int g_debug_trace = 1, g_default_level = 3, g_reload_menu = 1;
+// ---------------------------------------------------------------- configuration (version de diagnostic)
+static int g_debug_trace = 1;
 
 static void load_ini(void) {
 #ifdef WUM_NOLOG
-    g_key_add = g_key_del = g_key_level = g_key_dump = 0;
     g_debug_trace = 0;
     return;
 #endif
     char p[MAX_PATH]; snprintf(p, sizeof p, "%swummod.ini", g_dir);
     FILE* f = fopen(p, "r");
-    int has_level = 0;
-    if (f) { char l[256]; while (fgets(l, sizeof l, f)) if (strstr(l, "depuis la v18")) has_level = 1; fclose(f); }
-    if (!has_level) {   // fichier absent ou d'une version précédente : réécrit avec toutes les clés
+    int current = 0;
+    if (f) { char l[256]; while (fgets(l, sizeof l, f)) if (strstr(l, "[Main] v40")) current = 1; fclose(f); }
+    if (!current) {   // fichier absent ou ancien : réécrit
         f = fopen(p, "w");
         if (f) {
-            fputs("; WUM-Mod - les IA se gerent en cliquant sur les lignes du lobby (hote) :\n"
-                  ";   ligne libre = choisir une equipe CPU, ligne d'IA = Voir (changer d'equipe) / Exclure.\n"
-                  "; Plus de touches F5/F7/F9 depuis la v18.\n"
-                  "[Main]\n; F8 (119) = ecrit l'etat (joueurs, equipes) dans le log\nDumpKey=119\n"
+            fputs("; WUM-Mod (version de diagnostic) - [Main] v40\n"
+                  "[Main]\n"
                   "; 1 = active les traces debug du jeu dans le log (reseau, tours, IA)\nDebugTrace=1\n", f);
             fclose(f);
         }
     }
-    g_key_add = g_key_del = g_key_level = 0;   // raccourcis F9/F5/F7 retirés (gestion par clic)
-    g_key_dump = GetPrivateProfileIntA("Main", "DumpKey", VK_F8, p);
-    g_default_level = GetPrivateProfileIntA("Main", "DefaultLevel", 3, p);
-    if (g_default_level < 1 || g_default_level > 5) g_default_level = 3;
     g_debug_trace = GetPrivateProfileIntA("Main", "DebugTrace", 1, p);
-    g_reload_menu = GetPrivateProfileIntA("Main", "ReloadLobbyMenu", 1, p);
 }
 
 // ---------------------------------------------------------------- appels au moteur
@@ -315,8 +302,9 @@ static void dump_gameinit(const char* why) {
         logf_("GameInitData (%s) : %d equipe(s)", why, n);
         for (int k = 0; k < 4 && k < n; k++) {
             uintptr_t t = gi_team(gi, k);
-            logf_("  T%d nom='%s' joueur='%s' vers=%d Skill=%d IsLocal=%d", k + 1,
-                  sstr(rd32(t)), sstr(rd32(t + 4)), rd8(t + 8), (int)rd32(t + 0x24), rd8(gi + GI_ISLOCAL + k));
+            logf_("  T%d nom='%s' joueur='%s' vers=%d Skill=%d IsLocal=%d allies=%d handicap=%d", k + 1,
+                  sstr(rd32(t)), sstr(rd32(t + 4)), (int)((this1_t)0x67C836u)(gi, 0, k), (int)rd32(t + 0x24),
+                  rd8(gi + GI_ISLOCAL + k), (int)((this1_t)0x67C74Fu)(gi, 0, k), (int)((this1_t)0x67C798u)(gi, 0, k));
         }
     }
     res_release(res);
@@ -379,14 +367,6 @@ static uintptr_t g_ns_seen;
 typedef int (__fastcall *thiscall1_t)(uintptr_t, uintptr_t, uintptr_t);
 static thiscall1_t o_send, o_begingame, o_teammsg, o_refresh;
 
-#ifdef WUM_NOLOG
-static void beep_ok(void) {}
-static void beep_no(void) {}
-#else
-static void beep_ok(void) { Beep(880, 120); }
-static void beep_no(void) { Beep(220, 300); }
-#endif
-
 static void set_mark(uintptr_t team, int k, int n, const char* src) {
     char mark[160];
     snprintf(mark, sizeof mark, MARK "%d/%d#%s#%s", k, n, local_nick(), src);
@@ -445,10 +425,12 @@ typedef const char* (__cdecl *wp_name_t)(uint32_t);
 static int g_guest_repop;
 static uintptr_t g_wp_carrier;
 static DWORD g_last_wp_send;
-static uint32_t g_wp_last_recv[3] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF};
+// réglages d'équipe en ligne : définis plus bas
+static void send_ts_state(const char* why, int verbose);
+static void ts_receive(const char* s);
+static void apply_ts_to_game(void);
 
 // lecture comme WormpotService : ressource (0x50B760) puis valeur 32 bits *(*(res+4)+0x1C)
-// (v20 utilisait 0x50B790, qui échoue sur ces ressources → rien n'était envoyé)
 static int read_reels(uint32_t r[3]) {
     static const char* names[3] = {"FE.Wormpot.Reel1", "FE.Wormpot.Reel2", "FE.Wormpot.Reel3"};
     for (int i = 0; i < 3; i++) {
@@ -469,7 +451,7 @@ static void send_team_msg_quiet(uintptr_t ns, uintptr_t team);
 static void set_uint_res(const char* name, uint32_t v);
 
 // WXFE.Wormpot.NameN (texte affiché dans le lobby) n'est recalculé par le jeu qu'en quittant le menu
-// Wormpot (0x7275AE) : après une partie ou une réception, l'affichage ne suivait plus → on le recalcule.
+// Wormpot (0x7275AE) : après une partie ou une réception, on le recalcule.
 static void sync_wp_names(void) {
     static const char* nm[3] = {"WXFE.Wormpot.Name1", "WXFE.Wormpot.Name2", "WXFE.Wormpot.Name3"};
     uint32_t r[3];
@@ -506,18 +488,6 @@ static void send_wp_state(const char* why, int verbose) {
     first = 0;
 }
 
-// Les listes de l'interface s'abonnent à leur ressource conteneur (0x77838A, rappel 0x778264) et
-// non aux textes des lignes : après avoir écrit les lignes, on « notifie » le conteneur
-// (0x69E060 = prévient les abonnés d'une ressource) pour que la liste se reconstruise.
-#define F_RES_NOTIFY 0x69E060u   // stdcall Notify(ressource)
-static void notify_res(const char* name) {
-    void* res = NULL;
-    const char* n = name;
-    if (((res_find_t)F_RES_FIND)(&n, &res) < 0 || !res) { logf_("notification : %s introuvable", name); return; }
-    ((com1_t)F_RES_NOTIFY)((uintptr_t)res);
-    res_release(res);
-}
-
 // Poste un message interne de l'interface avec un paramètre texte (comme NetService::RefreshLobby
 // le fait pour FE.PopulateTable). Le message garde le pointeur : param doit rester valide.
 #define MSG_ALLOC_PTR  0x96D14Cu   // allocateur de messages
@@ -525,12 +495,8 @@ static void notify_res(const char* name) {
 #define F_MSG_ID       0x68BBE6u   // thiscall Registration::GetId(1)
 #define F_MSG_INITSTR  0x69151Au   // thiscall StringMsg::Init(id, const char*)
 #define F_MSG_POST     0x6910E4u   // cdecl Post(msg)
-#define REG_CHANGEMENU 0x9853BCu   // objet d'enregistrement de « FE.ChangeMenu »
 typedef uintptr_t (__fastcall *this2_t)(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
 typedef int (__cdecl *post_t)(uintptr_t);
-static char g_menu_param[64];
-static int g_reload_pending;
-
 static int g_post_quiet;
 static void post_str_msg(uintptr_t reg, const char* param, const char* what) {
     uintptr_t alloc = rd32(MSG_ALLOC_PTR);
@@ -543,11 +509,6 @@ static void post_str_msg(uintptr_t reg, const char* param, const char* what) {
     if (!g_post_quiet) logf_("%s$%s poste (id %u) -> %d", what, param, id, r);
 }
 
-static void post_change_menu(const char* menu) {
-    snprintf(g_menu_param, sizeof g_menu_param, "%s", menu);
-    post_str_msg(REG_CHANGEMENU, g_menu_param, "FE.ChangeMenu");
-}
-
 // La liste des joueurs du lobby (WXNET.GameLobbyList) reçoit ses textes de
 // TablePopulationService 0x4C9AA0 (lit WXNET.Lobby.PlayerN.Name, sinon FETXT.WaitingForPlayer),
 // exécuté sur FE.PopulateTable$WXPreRound (avec 0x4CAF60, liste d'avant-manche).
@@ -556,33 +517,11 @@ static void repopulate_lobby_list(void) {
     post_str_msg(REG_POPULATETABLE, "WXPreRound", "FE.PopulateTable");
 }
 
-// appelé depuis NetService::Update : recharge le menu courant s'il s'agit d'un menu du lobby
-static void reload_lobby_menu_if_pending(void) {
-    if (!g_reload_pending) return;
-    g_reload_pending = 0;
-    if (!g_reload_menu) return;
-    const char* cur = get_str("FE.CurrentMenu");
-    if (strncmp(cur, "WXNET.", 6) != 0) { logf_("pas de rechargement : menu courant '%s'", cur); return; }
-    // FrontEndService (0x726C75) ignore une demande vers le menu courant : on brouille d'abord FE.CurrentMenu
-    char menu[64]; snprintf(menu, sizeof menu, "%s", cur);
-    const char* k = "FE.CurrentMenu";
-    ((set_str_t)F_SET_STRING)(&k, "WUM.Reload");
-    post_change_menu(menu);
-}
 static int g_force_repop;
 static void refresh_lobby(void) {   // via le crochet, pour réécrire aussi les lignes des IA
     uintptr_t ns = netservice();
     g_force_repop = 1;
     if (ns && o_refresh) h_refresh(ns, 0, 1);
-}
-
-// équipes CPU de la caserne (Skill>0), dans l'ordre de la caserne ; le niveau est celui de l'équipe
-static int cpu_teams(uintptr_t* arr, int max, void** res) {
-    uintptr_t t[64];
-    int n = barracks(t, 64, res), k = 0;
-    for (int i = 0; i < n && k < max; i++)
-        if ((int)rd32(t[i] + TEAM_SKILL) > 0) arr[k++] = t[i];
-    return k;
 }
 
 static int ai_uses(const char* name, int except) {
@@ -605,29 +544,6 @@ static void ai_marks(void) {
     for (int k = 0; k < g_ai_n; k++) set_mark(g_ai[k].team, k, g_ai_n, g_ai[k].src);
 }
 
-static void add_ai(void) {
-    logf_("F9 : ajout d'une IA demande");
-    dump_players("F9");
-    if (host_is_local() != 1) { logf_("refuse : ce PC n'est pas l'hote"); beep_no(); return; }
-    int humans = pl_count(ns_players());
-    if (g_ai_n >= MAX_AI || humans + g_ai_n >= 4) { logf_("refuse : 4 equipes maximum (%d joueurs + %d IA)", humans, g_ai_n); beep_no(); return; }
-    uintptr_t t[64]; void* res;
-    int n = cpu_teams(t, 64, &res), pick = -1;
-    for (int i = 0; i < n; i++) logf_("  equipe CPU [%d] '%s' Skill=%d", i, sstr(rd32(t[i] + TEAM_NAME)), (int)rd32(t[i] + TEAM_SKILL));
-    for (int i = 0; i < n && pick < 0; i++) if (!ai_uses(sstr(rd32(t[i] + TEAM_NAME)), -1)) pick = i;
-    int ok = pick >= 0 && ai_set_team(g_ai_n, t[pick]);
-    res_release(res);
-    if (!ok) { logf_("aucune equipe CPU libre dans la caserne (%d equipe(s) CPU)", n); beep_no(); return; }
-    g_ai_n++;
-    ai_marks();
-    logf_("IA %d prete : '%s' Skill=%d", g_ai_n, g_ai[g_ai_n - 1].src, g_ai[g_ai_n - 1].level);
-    send_ai_state("F9", 0);
-    refresh_lobby();
-#ifndef WUM_NOLOG
-    for (int k = 0; k < g_ai_n; k++) Beep(880, 90);
-#endif
-}
-
 // retire l'IA k (les suivantes remontent d'un emplacement)
 static void del_ai_slot(int k, const char* why) {
     if (k < 0 || k >= g_ai_n) return;
@@ -640,35 +556,6 @@ static void del_ai_slot(int k, const char* why) {
     send_ai_state(why, removed);
     obj_release(removed);
     refresh_lobby();
-    beep_ok();
-}
-
-static void del_ai(void) {
-    if (host_is_local() != 1) { logf_("F7 refuse : pas l'hote"); beep_no(); return; }
-    if (g_ai_n == 0) { logf_("F7 : aucune IA a retirer"); beep_no(); return; }
-    del_ai_slot(g_ai_n - 1, "F7");
-}
-
-// F5 : la dernière IA passe à l'équipe CPU suivante de la caserne (non utilisée par une autre IA)
-static void next_team(void) {
-    if (host_is_local() != 1) { logf_("F5 refuse : pas l'hote"); beep_no(); return; }
-    if (g_ai_n == 0) { logf_("F5 : aucune IA"); beep_no(); return; }
-    int k = g_ai_n - 1;
-    uintptr_t t[64]; void* res;
-    int n = cpu_teams(t, 64, &res), cur = -1, pick = -1;
-    for (int i = 0; i < n; i++) if (strcmp(sstr(rd32(t[i] + TEAM_NAME)), g_ai[k].src) == 0) cur = i;
-    for (int d = 1; d <= n && pick < 0; d++) {
-        int i = (cur + d + n) % n;
-        if (!ai_uses(sstr(rd32(t[i] + TEAM_NAME)), k)) pick = i;
-    }
-    int ok = pick >= 0 && pick != cur && ai_set_team(k, t[pick]);
-    res_release(res);
-    if (!ok) { logf_("F5 : pas d'autre equipe CPU libre"); beep_no(); return; }
-    ai_marks();
-    logf_("F5 : IA %d -> '%s' Skill=%d", k + 1, g_ai[k].src, g_ai[k].level);
-    send_ai_state("F5", 0);
-    refresh_lobby();
-    beep_ok();
 }
 
 static void clear_recv(void) {
@@ -679,20 +566,10 @@ static void clear_recv(void) {
 // ---------------------------------------------------------------- crochets
 typedef int (__stdcall *upd_t)(uintptr_t, uintptr_t);
 static upd_t o_ns_update;
-static com4_t o_tc_addtogame, o_mx_write;
-
-static int key_edge(int vk, int* prev) {
-    int down = (GetAsyncKeyState(vk) & 0x8000) != 0;
-    int hit = down && !*prev;
-    *prev = down;
-    return hit;
-}
-
-static int is_foreground(void) {
-    DWORD pid = 0;
-    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    return pid == GetCurrentProcessId();
-}
+static com4_t o_tc_addtogame;
+#ifndef WUM_NOLOG
+static com4_t o_mx_write;
+#endif
 
 // 1 si les lignes des IA contiennent les noms attendus (ressources WXNET.Lobby.PlayerN.Name)
 static int ai_rows_ok(uintptr_t ns) {
@@ -714,7 +591,7 @@ static volatile int g_pop_stale;   // le dernier remplissage de la liste a vu de
 
 static int __stdcall h_ns_update(uintptr_t ns, uintptr_t dt) {
     int r = o_ns_update(ns, dt);
-    static int pa, pd, pl, pp, last_n = -1, last_host = -2;
+    static int last_n = -1, last_host = -2;
     static DWORD last_flush;
     if (ns != g_ns_seen) {   // nouvelle session réseau : on oublie les IA de la précédente
         logf_("NetService %08X (nouvelle session)", (unsigned)ns);
@@ -725,6 +602,7 @@ static int __stdcall h_ns_update(uintptr_t ns, uintptr_t dt) {
         logf_("NetService : %d joueur(s), hote local=%d, pseudo local='%s', IA preparees=%d", n, host, local_nick(), g_ai_n);
         if (host == 1 && g_ai_n > 0 && n > last_n && last_n >= 0) send_ai_state("nouveau joueur", 0);
         if (host == 1 && n > last_n && last_n >= 0) send_wp_state("nouveau joueur", 1);
+        if (host == 1 && n > last_n && last_n >= 0) send_ts_state("nouveau joueur", 1);
         last_n = n; last_host = host;
     }
     if (host == 1 && n >= 2 && GetTickCount() - g_last_wp_send > 3000 && strncmp(get_str("FE.CurrentMenu"), "WXNET.", 6) == 0) {
@@ -733,6 +611,7 @@ static int __stdcall h_ns_update(uintptr_t ns, uintptr_t dt) {
         int changed = read_reels(r) && (r[0] != last[0] || r[1] != last[1] || r[2] != last[2]);
         if (changed) memcpy(last, r, sizeof last);
         send_wp_state("periodique", changed);
+        send_ts_state("periodique", 0);
     }
     // les messages envoyés pendant l'ouverture du canal d'un nouvel invité sont perdus : dans le lobby,
     // l'hôte renvoie l'état des IA toutes les 3 s (l'invité ne redessine que si l'état change)
@@ -746,10 +625,6 @@ static int __stdcall h_ns_update(uintptr_t ns, uintptr_t dt) {
             g_last_ai_send = GetTickCount();
         }
     }
-    if (is_foreground()) {
-        if (key_edge(g_key_dump, &pp)) { dump_players("F8"); dump_gameinit("F8"); }
-    }
-    reload_lobby_menu_if_pending();
     {
         static DWORD last_chk;
         DWORD tc = GetTickCount();
@@ -802,6 +677,7 @@ static int __fastcall h_send(uintptr_t ns, uintptr_t edx, uintptr_t msg) {
               team ? sstr(rd32(team + TEAM_PLAYER)) : "-");
         if (g_ai_n > 0 && GetTickCount() - g_last_ai_send > 3000) send_ai_state("lancement", 0);
         if (GetTickCount() - g_last_wp_send > 1000) send_wp_state("lancement", 1);
+        send_ts_state("lancement", 1);
     }
     return r;
 }
@@ -815,7 +691,6 @@ static int __fastcall h_teammsg(uintptr_t msg, uintptr_t edx, uintptr_t arg) {
         uint32_t cur[3] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF};
         if (host_is_local() != 1 && sscanf(pl + 6, "%u#%u#%u", &r[0], &r[1], &r[2]) == 3 &&
             (!read_reels(cur) || memcmp(r, cur, sizeof r) != 0)) {
-            memcpy(g_wp_last_recv, r, sizeof r);
             set_uint_res("FE.Wormpot.Reel1", r[0]);
             set_uint_res("FE.Wormpot.Reel2", r[1]);
             set_uint_res("FE.Wormpot.Reel3", r[2]);
@@ -825,6 +700,10 @@ static int __fastcall h_teammsg(uintptr_t msg, uintptr_t edx, uintptr_t arg) {
             read_reels(chk);
             logf_("Wormpot de l'hote applique : %u %u %u (relu %u %u %u)", r[0], r[1], r[2], chk[0], chk[1], chk[2]);
         }
+        return 0;
+    }
+    if (strncmp(pl, "WUMTS#", 6) == 0) {
+        if (host_is_local() != 1) ts_receive(pl + 6);
         return 0;
     }
     if (strncmp(pl, MARK, 4) == 0) {
@@ -857,11 +736,14 @@ static int __fastcall h_teammsg(uintptr_t msg, uintptr_t edx, uintptr_t arg) {
     return o_teammsg(msg, 0, arg);
 }
 
-// diagnostic : remplissage de WXNET.GameLobbyList (0x4C9AA0, thiscall sans argument)
+static void decorate_lobby(void);
+// remplissage de WXNET.GameLobbyList (0x4C9AA0, thiscall sans argument) : lignes occupées reconstruites
+// juste avant (decorate_lobby), puis contrôle des lignes des IA
 #define F_POP_LOBBYLIST 0x4C9AA0u
 static this0_t o_pop_lobby;
 static uintptr_t __fastcall h_pop_lobby(uintptr_t self, uintptr_t edx) {
     static int cnt;
+    decorate_lobby();
     uintptr_t r = o_pop_lobby(self, 0);
     g_pop_stale = !ai_rows_ok(netservice());
     if (++cnt <= 60) {
@@ -902,7 +784,7 @@ static int __fastcall h_refresh(uintptr_t ns, uintptr_t edx, uintptr_t force) {
         ((set_int_t)F_SET_BOOL)(&kp, 1);
     }
     // lignes libérées par une IA retirée : le RefreshLobby d'origine ne les vide pas tant qu'une
-    // fenêtre (« voir / exclure ») est ouverte → on les vide nous-mêmes
+    // fenêtre est ouverte → on les vide nous-mêmes
     static int max_rows;
     if (humans + n > max_rows) max_rows = humans + n;
     for (int slot = humans + n + 1; slot <= max_rows && slot <= 4; slot++) {
@@ -977,42 +859,15 @@ static int __fastcall h_begingame(uintptr_t ns, uintptr_t edx, uintptr_t msg) {
         for (int k = 0; k < g_recv_n && k < MAX_AI; k++)
             if (g_recv[k]) add_ai_to_game(g_recv[k], k, g_recv_host);
     }
+    apply_ts_to_game();
     dump_gameinit("apres BeginGame");
     log_flush();
     return r;
 }
 
-// ---------------------------------------------------------------- sondes interface (diagnostic v6)
-// 0x78163F : rappel de changement de donnée d'une colonne de liste (cdecl a1, a2) → marque a2+8 « à redessiner »
-// 0x781710 : construit le texte d'une colonne (thiscall, 6 args, ret 0x18) ; 6e arg = nom de la donnée
-typedef int (__cdecl *ui_cb_t)(uintptr_t, uintptr_t);
-typedef int (__fastcall *ui_text_t)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
-static ui_cb_t o_ui_cb;
-static ui_text_t o_ui_text;
-static volatile LONG g_ui_logs;
-
-static int __cdecl h_ui_cb(uintptr_t a1, uintptr_t a2) {
-    if (g_ai_n > 0 && InterlockedIncrement(&g_ui_logs) < 400) {
-        uintptr_t owner = rd32(a2 + 8);
-        logf_("UI rappel donnee : a1=%08X a2=%08X proprietaire=%08X (a1+0..: %08X %08X %08X '%s')", (unsigned)a1, (unsigned)a2,
-              (unsigned)owner, rd32(a1), rd32(a1 + 4), rd32(a1 + 8), sstr(rd32(a1 + 4)));
-    }
-    return o_ui_cb(a1, a2);
-}
-
-static int __fastcall h_ui_text(uintptr_t col, uintptr_t edx, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4,
-                                uintptr_t a5, uintptr_t id) {
-    int r = o_ui_text(col, 0, a1, a2, a3, a4, a5, id);
-    const char* nm = sstr(id);
-    if (strstr(nm, "Lobby.Player") && InterlockedIncrement(&g_ui_logs) < 400)
-        logf_("UI texte colonne %08X donnee='%s' valeur='%s' -> %d (proprietaire %08X)", (unsigned)col, nm, get_str(nm), r & 0xFF,
-              rd32(col + 8));
-    return r;
-}
-
 // ---------------------------------------------------------------- choix d'une IA en cliquant sur une ligne du lobby
 // Clic sur une ligne → message « Net.Lobby.PlayerSelected$N » (N = 0..3) traité par NetService::HandleMessage.
-// Pour l'hôte, sur une ligne d'IA ou la 1re ligne libre : on ouvre la fenêtre de liste d'équipes du jeu
+// Pour l'hôte, sur une ligne libre : on ouvre la fenêtre de liste d'équipes du jeu
 // (FE.PopulateTable$WXOnlineTeam puis WXMsg.CreatePopUp$WXFEP.SelectTeam). Sa liste est remplie par
 // TablePopulationService 0x4C4110, qui exclut d'habitude les équipes CPU (jne en 0x4C44CE si Skill≠0) :
 // pendant ce remplissage on inverse ce saut (je) et l'action finale devient « Net.LocalSelectTeam »,
@@ -1021,9 +876,7 @@ static int __fastcall h_ui_text(uintptr_t col, uintptr_t edx, uintptr_t a1, uint
 #define REG_PLAYERSEL    0x979E60u   // « Net.Lobby.PlayerSelected »
 #define REG_LOCALSELTEAM 0x979E58u   // « Net.LocalSelectTeam »
 #define REG_CREATEPOPUP  0x979EE0u   // « WXMsg.CreatePopUp »
-#define REG_VIEWDETAILS  0x979E68u   // « Net.Lobby.ViewPlayerDetails » (bouton Voir de WXFEP.ViewKick)
-#define REG_KICKPLAYER   0x979E70u   // « Net.Lobby.KickPlayer » (bouton Exclure)
-// le clic sur une ligne écrit aussi WXNet.Lobby.SelectedPlayer = N (actions du menu) ; Voir/Exclure le relisent
+#define REG_KICKPLAYER   0x979E70u   // « Net.Lobby.KickPlayer » (exclusion, lit WXNet.Lobby.SelectedPlayer)
 #define F_POP_ONLINETEAM 0x4C4110u   // TablePopulationService::PopulateOnlineTeams(action) thiscall ret 4
 #define POP_SKILL_JUMP   0x4C44CEu   // 0F 85 = jne (exclut Skill≠0) ; 0F 84 = je (garde seulement Skill≠0)
 #define F_MSG_ISID       0x68BCCEu   // cdecl IsMessage(id, enregistrement)
@@ -1065,7 +918,7 @@ static void patch_skill_jump(int only_cpu) {
 // CrcCheckService (0x635570) : boucle sur la table 0x922508 (89 fichiers .lub / XOM de langue / Tweak) ;
 // au premier CRC faux, jne 0x635667 mémorise l'index puis Update() appelle XomGetApp()->Quit()
 // → crash R6025 « pure virtual function call ». 75 4D → EB 00 : la comparaison passe toujours
-// (même patch que WUM.Loader.asi et que l'exe de la v3), pour LOCAL/WORMACTING/FreFE/MENUTWKXNET modifiés.
+// (même patch que WUM.Loader.asi), pour les fichiers du jeu modifiés (MENUTWKXNET, LOCAL, FreFE…).
 #define CRC_CHECK_JNE    0x635618u
 static void patch_crc_check(void) {
     uint8_t* p = (uint8_t*)CRC_CHECK_JNE;
@@ -1164,21 +1017,381 @@ static void apply_ai_pick(void) {
     int n = barracks(t, 64, &res);
     int slot = g_pick_slot;
     logf_("Equipe IA choisie : index %d / %d, emplacement %d", idx, n, slot + 1);
-    if (idx < 0 || idx >= n || (int)rd32(t[idx] + TEAM_SKILL) <= 0) { logf_("choix invalide"); res_release(res); beep_no(); return; }
+    if (idx < 0 || idx >= n || (int)rd32(t[idx] + TEAM_SKILL) <= 0) { logf_("choix invalide"); res_release(res); return; }
     const char* nm = sstr(rd32(t[idx] + TEAM_NAME));
-    if (ai_uses(nm, slot < g_ai_n ? slot : -1)) { logf_("'%s' est deja une IA de la partie", nm); res_release(res); beep_no(); return; }
+    if (ai_uses(nm, slot < g_ai_n ? slot : -1)) { logf_("'%s' est deja une IA de la partie", nm); res_release(res); return; }
     int humans = pl_count(ns_players());
     if (slot > g_ai_n) slot = g_ai_n;
-    if (slot == g_ai_n && (g_ai_n >= MAX_AI || humans + g_ai_n >= 4)) { logf_("4 equipes maximum"); res_release(res); beep_no(); return; }
+    if (slot == g_ai_n && (g_ai_n >= MAX_AI || humans + g_ai_n >= 4)) { logf_("4 equipes maximum"); res_release(res); return; }
     int ok = ai_set_team(slot, t[idx]);
     res_release(res);
-    if (!ok) { beep_no(); return; }
+    if (!ok) { return; }
     if (slot == g_ai_n) g_ai_n++;
     ai_marks();
     logf_("IA %d = '%s' Skill=%d (choisie dans la liste)", slot + 1, g_ai[slot].src, g_ai[slot].level);
     send_ai_state("choix", 0);
     refresh_lobby();
-    beep_ok();
+}
+
+// ---------------------------------------------------------------- réglages d'équipe en ligne
+// En local, un clic sur une équipe ouvre WXFEP.TeamSettings (MENUTWKX.XOM) : nombre de vers, couleur
+// d'alliés, handicap, « Enlever une équipe », « Accepter ». La fenêtre lit/écrit WXFE.TeamSelectedName /
+// Worms / AlliedGroup / Handicap ; ses flèches font WXMsg.SetDataResource puis FE.PopulateTable$WXTeamSettings
+// (TablePopulationService 0x4C0640) ; « Accepter » = WXMsg.PrepareTeam$Update, « Enlever » =
+// WXMsg.PrepareTeam$RemoveTeam (TeamControlService 0x742AB0 → setters GameInitData 0x67C882 vers,
+// 0x67C7E1 handicap, 0x67C92D alliés). La version en ligne (WXNETP.TeamSettings, GameBrowser/GameSpy)
+// n'existe pas dans les menus PC.
+// Ici : l'hôte clique une ligne OCCUPÉE (humain ou IA) → on remplit les ressources, on ouvre la fenêtre
+// locale, on intercepte PrepareTeam$Update/RemoveTeam ; les réglages sont envoyés aux invités
+// (TeamMessage « WUMTS#clé,vers,handicap,alliés|… ») et appliqués dans GameInitData sur chaque PC après
+// ProcessBeginGameMessage (lib_SetupMultiplayerTeam lit T*_NumOfWorms / T*_AlliedGroup / T*_Handicap).
+// Clé : pseudo Steam du joueur (« ST:… ») pour un humain, « IA:<équipe> » pour une IA.
+#define F_TC_PREPARETEAM 0x742AB0u   // thiscall (this, const char* param) ret 4
+#define POP_TS_NETJUMP   0x4C08A7u   // je → WXNETP.TeamSettingsList (absente sur PC) : neutralisé
+#define F_POP_TEAMSET    0x4C0640u   // TablePopulationService : remplit WXFEP.TeamSettingsList
+#define MAX_TS 8
+#define TS_MAX_WORMS_TOTAL 16
+typedef struct { char key[64]; int worms, hand, ally; } ts_t;
+static ts_t g_ts[MAX_TS];
+static int g_ts_n;
+static int g_ts_open, g_ts_row, g_ts_ai = -1;
+static char g_ts_key[64];
+static DWORD g_ts_time, g_last_ts_send;
+static uintptr_t g_ts_carrier;
+static thiscall1_t o_prepare;
+static this0_t o_pop_teamset;
+
+static ts_t* ts_find(const char* key, int create) {
+    for (int i = 0; i < g_ts_n; i++) if (strcmp(g_ts[i].key, key) == 0) return &g_ts[i];
+    if (!create || g_ts_n >= MAX_TS || !key[0]) return NULL;
+    ts_t* t = &g_ts[g_ts_n++];
+    snprintf(t->key, sizeof t->key, "%s", key);
+    t->worms = 4; t->hand = 0; t->ally = 0;
+    return t;
+}
+
+static int read_res_u32(const char* name, uint32_t* v) {
+    void* res = NULL; const char* n = name;
+    if (((res_find_t)F_RES_FIND)(&n, &res) < 0 || !res) return 0;
+    uintptr_t inner = rd32((uintptr_t)res + 4);
+    *v = inner ? rd32(inner + 0x1C) : 0;
+    res_release(res);
+    return 1;
+}
+
+static void send_ts_state(const char* why, int verbose) {
+    uintptr_t ns = netservice();
+    if (!ns || host_is_local() != 1 || !o_send || pl_count(ns_players()) < 2 || g_ts_n == 0) return;
+    if (!g_ts_carrier) {
+        uintptr_t t[4]; void* res;
+        int n = barracks(t, 4, &res);
+        if (n > 0) g_ts_carrier = clone_team(t[0]);
+        res_release(res);
+        if (!g_ts_carrier) return;
+    }
+    char mark[640] = "WUMTS#";
+    for (int i = 0; i < g_ts_n; i++) {
+        char e[96];
+        snprintf(e, sizeof e, "%s%s,%d,%d,%d", i ? "|" : "", g_ts[i].key, g_ts[i].worms, g_ts[i].hand, g_ts[i].ally);
+        strncat(mark, e, sizeof mark - strlen(mark) - 1);
+    }
+    set_xstr(g_ts_carrier + TEAM_PLAYER, mark);
+    send_team_msg_quiet(ns, g_ts_carrier);
+    g_last_ts_send = GetTickCount();
+    if (verbose) logf_("Reglages d'equipe envoyes aux invites (%s) : %s", why, mark + 6);
+}
+
+static void ts_receive(const char* str) {
+    static char last[640];
+    if (strcmp(last, str) == 0) return;
+    snprintf(last, sizeof last, "%s", str);
+    g_ts_n = 0;
+    char buf[640]; snprintf(buf, sizeof buf, "%s", str);
+    for (char* e = strtok(buf, "|"); e && g_ts_n < MAX_TS; e = strtok(NULL, "|")) {
+        char key[64]; int w, h, a;
+        char* c = strchr(e, ',');
+        if (!c) continue;
+        *c = 0; snprintf(key, sizeof key, "%s", e);
+        if (sscanf(c + 1, "%d,%d,%d", &w, &h, &a) != 3) continue;
+        ts_t* t = ts_find(key, 1);
+        if (t) { t->worms = w; t->hand = h; t->ally = a; }
+    }
+    logf_("Reglages d'equipe de l'hote recus : %s (%d equipe(s))", str, g_ts_n);
+    g_guest_repop = 1;
+}
+
+// sur chaque PC, après l'ajout des équipes (humaines par le jeu, IA par le mod) : mêmes données → même résultat
+static void apply_ts_to_game(void) {
+    if (g_ts_n == 0) return;
+    void* res;
+    uintptr_t gi = res_container("GM.GameInitData", &res);
+    if (!gi) { res_release(res); return; }
+    int n = (int)rd32(gi + GI_NUMTEAMS);
+    if (n > 4) n = 4;
+    int worms[4];
+    for (int k = 0; k < n; k++) {
+        uintptr_t t = gi_team(gi, k);
+        char key[80];
+        if ((int)rd32(t + 0x24) > 0) snprintf(key, sizeof key, "IA:%s", sstr(rd32(t)));
+        else snprintf(key, sizeof key, "%s", sstr(rd32(t + 4)));
+        worms[k] = (int)((this1_t)0x67C836u)(gi, 0, k);
+        ts_t* s = ts_find(key, 0);
+        if (!s) { logf_("Reglages T%d '%s' : aucun (valeurs du jeu)", k + 1, key); continue; }
+        int w = s->worms < 1 ? 1 : s->worms > 6 ? 6 : s->worms;
+        int h = s->hand < -1 ? -1 : s->hand > 1 ? 1 : s->hand;
+        int a = s->ally < 0 ? 0 : s->ally > 3 ? 3 : s->ally;
+        ((this2_t)0x67C882u)(gi, 0, (uintptr_t)k, (uintptr_t)w);
+        ((this2_t)0x67C7E1u)(gi, 0, (uintptr_t)k, (uintptr_t)h);
+        ((this2_t)0x67C92Du)(gi, 0, (uintptr_t)k, (uintptr_t)a);
+        worms[k] = w;
+        logf_("Reglages T%d '%s' appliques : vers=%d handicap=%d allies=%d", k + 1, key, w, h, a);
+    }
+    // le jeu limite le total à 16 vers (0x73620F) : on retire des vers en partant de la dernière équipe
+    int total = 0;
+    for (int k = 0; k < n; k++) total += worms[k];
+    for (int k = n - 1; total > TS_MAX_WORMS_TOTAL && k >= 0; k--)
+        while (total > TS_MAX_WORMS_TOTAL && worms[k] > 1) { worms[k]--; total--; }
+    for (int k = 0; k < n; k++)
+        if (worms[k] != (int)((this1_t)0x67C836u)(gi, 0, k)) {
+            ((this2_t)0x67C882u)(gi, 0, (uintptr_t)k, (uintptr_t)worms[k]);
+            logf_("T%d : vers ramenes a %d (16 vers maximum en tout)", k + 1, worms[k]);
+        }
+    res_release(res);
+}
+
+// ligne r du lobby : occupée ? vers et groupe d'alliés (réglages de l'hôte, sinon défauts du jeu : 4, r)
+static void ts_row_info(uintptr_t ns, int row, int* occupied, int* worms, int* ally) {
+    int humans = pl_count(rd32(ns + 0x4A8)), host = host_flag(ns) == 1;
+    int na = host ? g_ai_n : g_recv_n;
+    char key[80] = "";
+    *occupied = 0; *worms = 4; *ally = row & 3;
+    if (row < humans) {
+        uintptr_t pp = pl_get(rd32(ns + 0x4A8), row);
+        if (pp) snprintf(key, sizeof key, "%s", sstr(rd32(pp + PL_NICK)));
+        *occupied = 1;
+    } else if (row < humans + na) {
+        const char* src = host ? g_ai[row - humans].src : g_recv_src[row - humans];
+        snprintf(key, sizeof key, "IA:%s", src);
+        *occupied = 1;
+    }
+    ts_t* t = key[0] ? ts_find(key, 0) : NULL;
+    if (t) { *worms = t->worms; *ally = t->ally & 3; }
+}
+
+static void ts_row_extra(uintptr_t ns, int row, int* hcap, int* skill) {
+    int humans = pl_count(rd32(ns + 0x4A8)), host = host_flag(ns) == 1;
+    int na = host ? g_ai_n : g_recv_n;
+    char key[80] = "";
+    *hcap = 0; *skill = 0;
+    if (row < humans) {
+        uintptr_t pp = pl_get(rd32(ns + 0x4A8), row);
+        if (pp) snprintf(key, sizeof key, "%s", sstr(rd32(pp + PL_NICK)));
+    } else if (row < humans + na) {
+        uintptr_t team = host ? g_ai[row - humans].team : g_recv[row - humans];
+        const char* src = host ? g_ai[row - humans].src : g_recv_src[row - humans];
+        if (team) *skill = (int)rd32(team + TEAM_SKILL);
+        snprintf(key, sizeof key, "IA:%s", src);
+    }
+    ts_t* t = key[0] ? ts_find(key, 0) : NULL;
+    if (t) *hcap = t->hand;
+}
+
+static void open_team_settings(uintptr_t ns, int row) {
+    int humans = pl_count(rd32(ns + 0x4A8));
+    char name[96] = "";
+    g_ts_ai = -1;
+    if (row < humans) {
+        uintptr_t pp = pl_get(rd32(ns + 0x4A8), row);
+        uintptr_t team = pp ? rd32(pp + PL_TEAM) : 0;
+        snprintf(g_ts_key, sizeof g_ts_key, "%s", pp ? sstr(rd32(pp + PL_NICK)) : "");
+        if (team) snprintf(name, sizeof name, "%s", sstr(rd32(team + TEAM_NAME)));
+        if (!name[0]) { char k[64]; snprintf(k, sizeof k, "WXNET.Lobby.Player%d.Name", row + 1); snprintf(name, sizeof name, "%s", get_str(k)); }
+    } else {
+        g_ts_ai = row - humans;
+        snprintf(name, sizeof name, "%s", g_ai[g_ts_ai].src);
+        snprintf(g_ts_key, sizeof g_ts_key, "IA:%s", g_ai[g_ts_ai].src);
+    }
+    ts_t* t = ts_find(g_ts_key, 0);
+    int w = t ? t->worms : 4, h = t ? t->hand : 0, a = t ? t->ally : (row & 3);
+    const char* kn = "WXFE.TeamSelectedName";
+    ((set_str_t)F_SET_STRING)(&kn, name);
+    set_uint_res("WXFE.TeamSelectedWorms", (uint32_t)w);
+    set_uint_res("WXFE.TeamSelectedHandicap", (uint32_t)h);
+    set_uint_res("WXFE.TeamSelectedAlliedGroup", (uint32_t)a);
+    g_ts_open = 1; g_ts_row = row; g_ts_time = GetTickCount();
+    const char* sub = get_str("GameOver.SubGameType");
+    const char* pop = (!strcmp(sub, "Statue") || !strcmp(sub, "Destruction")) ? "WXFEP.TeamSettingsNoHandicap"
+                    : !strcmp(sub, "Survivor") ? "WXFEP.TeamSettingsNoAlly" : "WXFEP.TeamSettings";
+    logf_("Reglages d'equipe : ligne %d '%s' cle '%s' (vers=%d handicap=%d allies=%d, mode '%s') -> %s", row + 1, name,
+          g_ts_key, w, h, a, sub, pop);
+    post_str_msg(REG_POPULATETABLE, "WXTeamSettings", "FE.PopulateTable");
+    post_str_msg(REG_CREATEPOPUP, pop, "WXMsg.CreatePopUp");
+}
+
+// pendant le remplissage de la fenêtre : GameInitData contient encore les équipes de la partie
+// précédente, que le jeu compterait dans la limite de 16 vers → on masque leur nombre (0)
+static uintptr_t __fastcall h_pop_teamset(uintptr_t svc, uintptr_t edx) {
+    if (!g_ts_open) return o_pop_teamset(svc, 0);
+    void* res;
+    uintptr_t gi = res_container("GM.GameInitData", &res);
+    uint32_t saved = gi ? rd32(gi + GI_NUMTEAMS) : 0;
+    if (gi) *(uint32_t*)(gi + GI_NUMTEAMS) = 0;
+    uintptr_t r = o_pop_teamset(svc, 0);
+    if (gi) *(uint32_t*)(gi + GI_NUMTEAMS) = saved;
+    res_release(res);
+    return r;
+}
+
+static int __fastcall h_prepare(uintptr_t tc, uintptr_t edx, uintptr_t param) {
+    const char* prm = param ? (const char*)param : "";
+    if (g_ts_open && (GetTickCount() - g_ts_time > 300000 || strncmp(get_str("FE.CurrentMenu"), "WXNET.", 6) != 0)) g_ts_open = 0;
+    if (!g_ts_open) return o_prepare(tc, 0, param);
+    logf_("PrepareTeam$%s (fenetre d'equipe en ligne, cle '%s')", prm, g_ts_key);
+    if (strcmp(prm, "Update") == 0) {
+        uint32_t w = 4, h = 0, a = 0;
+        read_res_u32("WXFE.TeamSelectedWorms", &w);
+        read_res_u32("WXFE.TeamSelectedHandicap", &h);
+        read_res_u32("WXFE.TeamSelectedAlliedGroup", &a);
+        ts_t* t = ts_find(g_ts_key, 1);
+        if (t) { t->worms = (int)w; t->hand = (int)h; t->ally = (int)a; }
+        logf_("Reglages acceptes pour '%s' : vers=%d handicap=%d allies=%d", g_ts_key, (int)w, (int)h, (int)a);
+        g_ts_open = 0;
+        send_ts_state("choix", 1);
+        g_force_repop = 1;
+        refresh_lobby();
+    } else if (strcmp(prm, "RemoveTeam") == 0) {
+        g_ts_open = 0;
+        if (g_ts_ai >= 0 && g_ts_ai < g_ai_n) del_ai_slot(g_ts_ai, "Enlever");
+        else if (g_ts_row > 0) {
+            set_uint_res("WXNet.Lobby.SelectedPlayer", (uint32_t)g_ts_row);
+            logf_("Enlever : exclusion du joueur de la ligne %d", g_ts_row + 1);
+            post_str_msg(REG_KICKPLAYER, "", "Net.Lobby.KickPlayer");
+        } else logf_("Enlever : c'est l'hote, ignore");
+    }
+    return 0;   // les autres actions (Select…, CancelEdit → FE.PreviousMenu) quitteraient le lobby
+}
+
+static const char* worms_icon(int w) {
+    static const char* ic[6] = {"WXFE.TeamInfo01:0", "WXFE.TeamInfo01:1", "WXFE.TeamInfo01:2",
+                                "WXFE.TeamInfo01:3", "WXFE.TeamInfo02:0", "WXFE.TeamInfo02:1"};
+    return ic[(w >= 1 && w <= 6) ? w - 1 : 3];
+}
+
+// Lobby affiché comme la liste locale (TablePopulationService 0x4BE910) : les lignes OCCUPÉES sont
+// reconstruites à chaque remplissage puis remises dans la liste (le widget ne dessine que les colonnes
+// présentes à la création d'une ligne) ; les lignes vides restent celles du menu (MENUTWKXNET.XOM).
+// Valeurs reprises de 0x4BEF1F…0x4BF2BD :
+//   ligne 0x87AE8C : +0x20 = 6, +0x24 = 9, +0x28 = 7 (bordures), +0x2C = 26, +0x48 = 42.0 (hauteur),
+//     +0x68 = 1 ; messages de sélection : 0x4BD320(ligne, n, 2, &ancien) → n XString à remplir (+0x34)
+//   [handicap 8×8 si ≠ 0], texte (+0x14 texte, +0x1C 20.0, +0x20 190 − 16 si handicap, +0x24 = 4,
+//     +0x28 = alliés + 15 = couleur du nom), contour BlackSplodge1 34×17 −60, tête de ver (icône de
+//     niveau, rose pour un humain) 17×17 −19, « ×N » 17×17 −40 (InvisibleToBorder)
+//   texte : table de chaînes 0x87AF10 (comme le menu du lobby) avec la clé WXNET.Lobby.PlayerN.Name,
+//     dont elle affiche la valeur
+//   liste : 0x6C37D5(ctr, 0x14, 0, 0, n) vide, AddChild(ctr, 0x14, 0, ligne) ajoute.
+#define DESC_LISTROW  0x87AE8Cu
+#define DESC_TEXTCOL  0x87AF10u   // WXFE_StringTableColumns
+static uintptr_t g_xom_rows[8], g_xom_ctr;   // lignes d'origine du menu (référence gardée)
+static int g_xom_n;
+
+static uintptr_t mk_obj(uintptr_t desc) {
+    uintptr_t o = (uintptr_t)((create_t)F_CREATE)(desc);
+    obj_addref(o);
+    return o;
+}
+static uintptr_t mk_icon(const char* name, float sx, float sy, float adj, int inv) {
+    uintptr_t c = mk_obj(CLASS_ICONCOL);
+    if (!c) return 0;
+    set_xstr(c + 0x14, name);
+    *(float*)(c + 0x18) = sx; *(float*)(c + 0x1C) = sy; *(float*)(c + 0x20) = adj;
+    *(uint8_t*)(c + 0x34) = 0; *(uint8_t*)(c + 0x35) = (uint8_t)inv;
+    return c;
+}
+static void row_add(uintptr_t row, uintptr_t child) {
+    if (!child) return;
+    o_add_child(row, 0x64, 0x14, child);
+    obj_release(child);
+}
+static uintptr_t build_lobby_row(int i, const char* name, int w, int a, int hcap, int skill) {
+    uintptr_t row = mk_obj(DESC_LISTROW);
+    if (!row) return 0;
+    *(uint32_t*)(row + 0x20) = 6; *(uint32_t*)(row + 0x24) = 9; *(uint32_t*)(row + 0x28) = 7;
+    *(uint32_t*)(row + 0x2C) = 0x1A; *(float*)(row + 0x48) = 42.0f; *(uint8_t*)(row + 0x68) = 1;
+    uintptr_t prev = 0;
+    uintptr_t msgs = ((uintptr_t (__fastcall*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t))0x4BD320u)(row, 0, 2, 2, (uintptr_t)&prev);
+    if (msgs) {
+        char m0[48], m1[80];
+        snprintf(m0, sizeof m0, "Net.Lobby.PlayerSelected$%d", i);
+        snprintf(m1, sizeof m1, "WXMsg.SetDataResource^WXNet.Lobby.SelectedPlayer^%d", i);
+        set_xstr(msgs, m0);
+        set_xstr(msgs + 4, m1);
+    }
+    static const char* hic[3] = {"WXFE.HandicapAllies:1", "WXFE.HandicapAllies:2", "WXFE.HandicapAllies:0"};
+    if (hcap) row_add(row, mk_icon(hic[(hcap < 0 ? -1 : 1) + 1], 8.0f, 8.0f, 0.0f, 0));
+    uintptr_t txt = mk_obj(DESC_TEXTCOL);
+    if (txt) {
+        char key[48];
+        snprintf(key, sizeof key, "WXNET.Lobby.Player%d.Name", i + 1);
+        set_xstr(txt + 0x14, key);
+        *(float*)(txt + 0x1C) = 20.0f;
+        *(float*)(txt + 0x20) = hcap ? 174.0f : 190.0f;
+        *(uint32_t*)(txt + 0x24) = 4; *(uint32_t*)(txt + 0x28) = (uint32_t)((a & 3) + 0xF);
+        *(uint32_t*)(txt + 0x2C) = 3; *(uint32_t*)(txt + 0x30) = 19;    // couleurs du XOM du lobby
+        *(uint32_t*)(txt + 0x34) = 2; *(uint32_t*)(txt + 0x38) = 3; *(uint32_t*)(txt + 0x3C) = 2;
+        *(uint8_t*)(txt + 0x48) = 0;
+        row_add(row, txt);
+    }
+    row_add(row, mk_icon("WXFE.BlackSplodge1", 34.0f, 17.0f, -60.0f, 1));
+    row_add(row, mk_icon(skill_icon(skill), 17.0f, 17.0f, -19.0f, 1));
+    row_add(row, mk_icon(worms_icon(w), 17.0f, 17.0f, -40.0f, 1));
+    return row;
+}
+
+static void decorate_lobby(void) {
+    uintptr_t ns = netservice();
+    if (!o_add_child) return;
+    void* res = NULL; const char* nm = "WXNET.GameLobbyList";
+    if (((res_find_t)F_RES_FIND)(&nm, &res) < 0 || !res) return;
+    uint32_t tmp[16]; memset(tmp, 0, sizeof tmp); tmp[1] = 0xE3A8;
+    uintptr_t obj = ((this1_t)0x69DEE0u)((uintptr_t)res, 0, (uintptr_t)tmp);
+    obj_addref(obj);
+    uintptr_t ctr = obj ? (uintptr_t)((create_t)0x4BD050u)(obj) : 0;
+    obj_addref(ctr);
+    obj_release(obj);
+    static int logged;
+    if (ctr && rdok((void*)(ctr + 0x14), 4) && rd32(ctr + 0x14)) {
+        uintptr_t arr = rd32(ctr + 0x14);
+        int n = (int)rd32(arr + 0x18);
+        if (ctr != g_xom_ctr) {   // nouvelle liste (chargement du XOM) : on garde ses lignes d'origine
+            for (int i = 0; i < g_xom_n; i++) obj_release(g_xom_rows[i]);
+            g_xom_n = 0;
+            for (int i = 0; i < n && i < 8; i++) { g_xom_rows[i] = rd32(arr + 0x20 + 4 * i); obj_addref(g_xom_rows[i]); g_xom_n++; }
+            g_xom_ctr = ctr;
+            logf_("Lobby : %d lignes d'origine gardees (liste %08X)", g_xom_n, (unsigned)ctr);
+        }
+        if (ns && g_xom_n > 0) {
+            uintptr_t rows[8];
+            for (int i = 0; i < g_xom_n; i++) {
+                int occ = 0, w = 4, a = 0, hcap = 0, skill = 0;
+                if (i < 4) ts_row_info(ns, i, &occ, &w, &a);
+                if (occ) ts_row_extra(ns, i, &hcap, &skill);
+                uintptr_t r = 0;
+                if (occ) {
+                    char key[48];
+                    snprintf(key, sizeof key, "WXNET.Lobby.Player%d.Name", i + 1);
+                    r = build_lobby_row(i, get_str(key), w, a, hcap, skill);
+                    if (logged < 8) { logged++; logf_("Lobby ligne %d reconstruite : '%s' vers=%d allies=%d handicap=%d niveau=%d", i + 1, get_str(key), w, a, hcap, skill); }
+                }
+                if (!r) { r = g_xom_rows[i]; obj_addref(r); }
+                rows[i] = r;
+            }
+            ((void (__cdecl*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t))0x6C37D5u)(ctr, 0x14, 0, 0, rd32(rd32(ctr + 0x14) + 0x18));
+            for (int i = 0; i < g_xom_n; i++) { o_add_child(ctr, 0x14, 0, rows[i]); obj_release(rows[i]); }
+        }
+    }
+    obj_release(ctr);
+    ((this0_t)0x6A22A0u)((uintptr_t)tmp, 0);
+    res_release(res);
 }
 
 static int __stdcall h_ns_msg(uintptr_t ns, uintptr_t msg) {
@@ -1186,25 +1399,16 @@ static int __stdcall h_ns_msg(uintptr_t ns, uintptr_t msg) {
         const char* prm = sstr(rd32(msg + 8));
         int row = prm[0] - '0', humans = pl_count(rd32(ns + 0x4A8)), host = host_flag(ns) == 1;
         logf_("Clic ligne du lobby %d (joueurs %d, IA %d, hote %d)", row + 1, humans, g_ai_n, host);
-        if (host && row >= humans && row < humans + g_ai_n) {
-            // ligne d'IA : on laisse le jeu ouvrir sa fenêtre « voir / exclure » (WXFEP.ViewKick)
-            logf_("ligne d'IA %d : fenetre voir/exclure", row - humans + 1);
-            return o_ns_msg(ns, msg);
+        if (host && row >= 0 && row < humans + g_ai_n && row <= 3 && o_prepare) {
+            // ligne occupée (humain ou IA) : fenêtre de réglages d'équipe (vers, alliés, handicap, enlever)
+            open_team_settings(ns, row);
+            return 0;
         }
         if (host && row >= humans && row <= 3) {
             int slot = row - humans;
             if (slot > g_ai_n) slot = g_ai_n;
-            if (slot == g_ai_n && (g_ai_n >= MAX_AI || humans + g_ai_n >= 4)) { beep_no(); return 0; }
+            if (slot == g_ai_n && (g_ai_n >= MAX_AI || humans + g_ai_n >= 4)) { return 0; }
             open_ai_picker(slot);
-            return 0;
-        }
-    } else if ((msg_is(msg, REG_KICKPLAYER) || msg_is(msg, REG_VIEWDETAILS)) && host_flag(ns) == 1) {
-        int kick = msg_is(msg, REG_KICKPLAYER);
-        int sel = get_int("WXNet.Lobby.SelectedPlayer", -1), humans = pl_count(rd32(ns + 0x4A8));
-        logf_("%s ligne %d (joueurs %d, IA %d)", kick ? "Exclure" : "Voir", sel + 1, humans, g_ai_n);
-        if (sel >= humans && sel < humans + g_ai_n) {
-            if (kick) del_ai_slot(sel - humans, "Exclure");
-            else open_ai_picker(sel - humans);   // « Voir » sur une IA : changer son équipe
             return 0;
         }
     } else if (msg_is(msg, REG_LOCALSELTEAM) && g_pick_mode == 2) {
@@ -1229,9 +1433,8 @@ static int __fastcall h_tc_playerused(uintptr_t tc, uintptr_t edx, uintptr_t pla
 // L'IA est calculée sur chaque PC (elle consomme le générateur aléatoire logique, comparé par la
 // validation réseau). Mais sa réflexion avance d'un pas de budget fixe (80 unités) à CHAQUE IMAGE
 // affichée (AIService::Update → 0x49B210) : selon le nombre d'images par seconde de chaque PC, elle
-// finit à des instants de jeu différents (test v18 : 1079060 chez l'hôte, 1079020 chez l'invité →
-// fin de tour décalée de 40 ms → « Turn validation mis-match »). On termine donc la réflexion en un
-// seul appel. Même chose pour la file de mise à jour de la carte de l'IA (AISceneGraphService::Update
+// finit à des instants de jeu différents (fin de tour décalée → « Turn validation mis-match »).
+// On termine donc la réflexion en un seul appel. Même chose pour la file de mise à jour de la carte de l'IA (AISceneGraphService::Update
 // traite 3 éléments par image) : on la vide entièrement, pour que la réflexion démarre au même moment.
 #define F_AI_THINKSTEP   0x49B210u   // cdecl : étapes de réflexion tant que le budget le permet
 #define AI_THINK_STATE   0x9560A8u   // 7 = réflexion terminée
@@ -1285,11 +1488,13 @@ static int __stdcall h_tc_addtogame(uintptr_t tc, uintptr_t team, uintptr_t resn
     return o_tc_addtogame(tc, team, resname, alliance);
 }
 
-// multiplexeur de log : write(this, texte, longueur, drapeau)
+#ifndef WUM_NOLOG
+// multiplexeur de log du jeu : write(this, texte, longueur, drapeau) → recopié dans le journal
 static int __stdcall h_mx_write(uintptr_t mx, uintptr_t s, uintptr_t len, uintptr_t flag) {
     if (len && len < 0x10000 && rdok((void*)s, len)) log_raw((const char*)s, (int)len);
     return o_mx_write(mx, s, len, flag);
 }
+#endif
 
 // ---------------------------------------------------------------- exceptions
 static LONG CALLBACK veh(EXCEPTION_POINTERS* e) {
@@ -1351,8 +1556,6 @@ static void install(void) {
     static const uint8_t sig_add[] = {0x8B, 0x44, 0x24, 0x04, 0x8B, 0x4C, 0x24, 0x08}; // mov eax,[esp+4]; mov ecx,[esp+8]
     static const uint8_t sig_used[] = {0x55, 0x8B, 0xEC, 0x53, 0x56};                // push ebp; mov ebp,esp; push ebx; push esi
     static const uint8_t sig_think[] = {0xD9, 0x05, 0xB0, 0x60, 0x95, 0x00};         // fld dword ptr [0x9560B0]
-    static const uint8_t sig_ui_cb[] = {0x8B, 0x44, 0x24, 0x08, 0x8B, 0x40, 0x08};  // mov eax,[esp+8]; mov eax,[eax+8]
-    static const uint8_t sig_ui_text[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x28};      // push ebp; mov ebp,esp; sub esp,0x28
     int ok = 1;
     ok &= vt_patch(NS_VT + 0x18, h_ns_update, 0x70B267, (void**)&o_ns_update, "NetService::Update");
     ok &= vt_patch(NS_VT + NS_VT_MSG, h_ns_msg, 0x70C21F, (void**)&o_ns_msg, "NetService::HandleMessage");
@@ -1361,6 +1564,21 @@ static void install(void) {
     ok &= (o_send = (thiscall1_t)make_hook(NS_SEND, h_send, sig_send, 5, "NetService::Send")) != NULL;
     ok &= (o_begingame = (thiscall1_t)make_hook(NS_BEGINGAME, h_begingame, sig_begin, 6, "NetService::ProcessBeginGameMessage")) != NULL;
     ok &= (o_refresh = (thiscall1_t)make_hook(NS_REFRESH, h_refresh, sig_refresh, 5, "NetService::RefreshLobby")) != NULL;
+    {
+        static const uint8_t sig_prep[] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x38};          // push ebp; mov ebp,esp; sub esp,0x38
+        static const uint8_t sig_popts[] = {0x6A, 0xFF, 0x68, 0x58, 0xBF, 0x7C, 0x00};   // push -1; push 0x7CBF58
+        static const uint8_t sig_netjump[] = {0x0F, 0x84, 0x91, 0x00, 0x00, 0x00};       // je 0x4C093E
+        if (memcmp((void*)POP_TS_NETJUMP, sig_netjump, 6) == 0) {
+            DWORD old;
+            VirtualProtect((void*)POP_TS_NETJUMP, 6, PAGE_EXECUTE_READWRITE, &old);
+            memset((void*)POP_TS_NETJUMP, 0x90, 6);
+            VirtualProtect((void*)POP_TS_NETJUMP, 6, old, &old);
+            FlushInstructionCache(GetCurrentProcess(), (void*)POP_TS_NETJUMP, 6);
+            o_pop_teamset = (this0_t)make_hook(F_POP_TEAMSET, h_pop_teamset, sig_popts, 7, "Remplissage fenetre d'equipe");
+            o_prepare = (thiscall1_t)make_hook(F_TC_PREPARETEAM, h_prepare, sig_prep, 6, "TeamControl::PrepareTeam");
+            if (!o_pop_teamset || !o_prepare) { logf_("ERREUR : fenetre d'equipe en ligne desactivee"); o_prepare = NULL; ok = 0; }
+        } else { logf_("ERREUR : saut 0x4C08A7 inattendu, fenetre d'equipe en ligne desactivee"); ok = 0; }
+    }
     {
         static const uint8_t sig_poplobby[] = {0x6A, 0xFF, 0x68, 0xA8, 0xC7, 0x7C, 0x00};   // push -1; push 0x7CC7A8
         o_pop_lobby = (this0_t)make_hook(F_POP_LOBBYLIST, h_pop_lobby, sig_poplobby, 7, "Remplissage liste lobby");
@@ -1373,10 +1591,6 @@ static void install(void) {
     ok &= (o_ai_think = (void0_t)make_hook(F_AI_THINKSTEP, h_ai_think, sig_think, 6, "AI ThinkStep")) != NULL;
     ok &= vt_patch(SG_VT_UPDATE, h_sg_update, 0x4B1210, (void**)&o_sg_update, "AISceneGraphService::Update");
     ok &= vt_patch(AIS_VT_UPDATE, h_ais_update, 0x4B3DA0, (void**)&o_ais_update, "AIService::Update");
-#ifndef WUM_NOLOG
-    o_ui_cb = (ui_cb_t)make_hook(0x78163F, h_ui_cb, sig_ui_cb, 7, "UI rappel colonne");
-    o_ui_text = (ui_text_t)make_hook(0x781710, h_ui_text, sig_ui_text, 6, "UI texte colonne");
-#endif
 #ifndef WUM_NOLOG
     ok &= vt_patch(MX_VT + 0x10, h_mx_write, 0x642568, (void**)&o_mx_write, "LogMultiplexer::Write");
 #endif
@@ -1400,7 +1614,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID _) {
         load_ini();
         char exe[MAX_PATH]; GetModuleFileNameA(NULL, exe, MAX_PATH);
         logf_("%s charge dans %s (base %08X)", WUM_VERSION, exe, (unsigned)(uintptr_t)GetModuleHandleA(NULL));
-        logf_("gestion des IA par clic dans le lobby ; touche etat=%d, traces debug=%d", g_key_dump, g_debug_trace);
+        logf_("gestion des IA par clic dans le lobby ; traces debug=%d", g_debug_trace);
         if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000 || rd32(NS_VT + 0x18) != 0x70B267) {
             logf_("exe inattendu (pas WormsMayhem.exe build 1077) : mod inactif");
             log_flush();
