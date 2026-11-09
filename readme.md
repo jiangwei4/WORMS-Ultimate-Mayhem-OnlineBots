@@ -24,12 +24,12 @@ Mod pour **Worms Ultimate Mayhem** (Steam) : jouez en ligne avec les équipes IA
 
 Téléchargez le dépôt (**Code → Download ZIP**), puis copiez les fichiers **jeu fermé** dans le dossier du jeu (`...\steamapps\common\WormsXHD\`). **Tous les joueurs doivent avoir la même installation.**
 
-### Option A — IA en ligne seulement (2 ou 3 fichiers du dépôt)
+### Option A — Le mod seul : IA, équipes et vers en ligne (2 ou 3 fichiers du dépôt)
 
 | Fichier | Rôle |
 |---|---|
 | `dinput8.dll` | [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases) (32 bits) : charge les plugins `.asi` |
-| `plugins\WUMMod.asi` | le mod : IA en ligne et synchro du Wormpot |
+| `plugins\WUMMod.asi` | le mod : IA en ligne, équipes (couleur d'alliés), nombre de vers et handicap en ligne, synchro du Wormpot |
 | `Data\Tweak\MENUTWKXNET.XOM` | *(optionnel)* bouton Wormpot dans le lobby en ligne, tiré du mod « Wormpot for Multiplayer » de Woitek1993 |
 
 Aucun fichier du jeu n'est remplacé, sauf `MENUTWKXNET.XOM` si vous ajoutez le Wormpot. Le mod neutralise lui-même le contrôle d'intégrité du jeu, donc ce fichier modifié ne le fait pas planter.
@@ -41,7 +41,7 @@ Copiez **tout** le contenu du dépôt (sauf `src\` et ce README) à la racine du
 | Fichier ou dossier | Rôle | Remplace un fichier du jeu |
 |---|---|---|
 | `dinput8.dll` | Ultimate ASI Loader | non |
-| `plugins\WUMMod.asi` | IA en ligne et synchro du Wormpot | non |
+| `plugins\WUMMod.asi` | IA en ligne, équipes, nombre de vers et handicap en ligne, synchro du Wormpot | non |
 | `plugins\WUM.Loader.asi` | charge les fichiers de `Data2\` à la place des originaux | non |
 | `plugins\WUM.Patch.asi` + `WUM.Patch.ini` | correctifs communautaires : toutes les langues, objets de fidélité, fenêtre sans bord… | non |
 | `Data2\` | fichiers chargés par WUM.Loader (`Bundl09.xom`, menus sans Marketplace) | non |
@@ -126,12 +126,12 @@ A mod for **Worms Ultimate Mayhem** (Steam): play online with the game's AI team
 
 Download the repository (**Code → Download ZIP**), then copy the files **with the game closed** into the game folder (`...\steamapps\common\WormsXHD\`). **Every player must have the same setup.**
 
-#### Option A — Online AI only (2 or 3 files from the repository)
+#### Option A — The mod only: online AI, teams and worm count (2 or 3 files from the repository)
 
 | File | Purpose |
 |---|---|
 | `dinput8.dll` | [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases) (32-bit): loads `.asi` plugins |
-| `plugins\WUMMod.asi` | the mod: online AI and Wormpot sync |
+| `plugins\WUMMod.asi` | the mod: online AI, online teams (ally colour), worm count and handicap, Wormpot sync |
 | `Data\Tweak\MENUTWKXNET.XOM` | *(optional)* Wormpot button in the online lobby, from Woitek1993's "Wormpot for Multiplayer" mod |
 
 No game file is replaced, except `MENUTWKXNET.XOM` if you add the Wormpot. The mod disables the game's integrity check itself, so this modified file does not crash the game.
@@ -143,7 +143,7 @@ Copy **everything** in the repository (except `src\` and this README) to the gam
 | File or folder | Purpose | Replaces a game file |
 |---|---|---|
 | `dinput8.dll` | Ultimate ASI Loader | no |
-| `plugins\WUMMod.asi` | online AI and Wormpot sync | no |
+| `plugins\WUMMod.asi` | online AI, online teams, worm count and handicap, Wormpot sync | no |
 | `plugins\WUM.Loader.asi` | loads the files in `Data2\` instead of the originals | no |
 | `plugins\WUM.Patch.asi` + `WUM.Patch.ini` | community fixes: all languages, loyalty items, borderless window… | no |
 | `Data2\` | files loaded by WUM.Loader (`Bundl09.xom`, menus without Marketplace) | no |
