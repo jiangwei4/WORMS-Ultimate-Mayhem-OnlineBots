@@ -24,8 +24,6 @@ Mod pour **Worms Ultimate Mayhem** (Steam) : jouez en ligne avec les équipes IA
 
 Téléchargez le dépôt (**Code → Download ZIP**), puis copiez les fichiers **jeu fermé** dans le dossier du jeu (`...\steamapps\common\WormsXHD\`). **Tous les joueurs doivent avoir la même installation.**
 
-![Choix d'une équipe IA dans le lobby en ligne](images/choix_ia.jpg)
-
 ### Option A — IA en ligne seulement (2 ou 3 fichiers du dépôt)
 
 | Fichier | Rôle |
@@ -127,8 +125,6 @@ A mod for **Worms Ultimate Mayhem** (Steam): play online with the game's AI team
 ### Installation
 
 Download the repository (**Code → Download ZIP**), then copy the files **with the game closed** into the game folder (`...\steamapps\common\WormsXHD\`). **Every player must have the same setup.**
-
-![Picking an AI team in the online lobby](images/choix_ia.jpg)
 
 #### Option A — Online AI only (2 or 3 files from the repository)
 
